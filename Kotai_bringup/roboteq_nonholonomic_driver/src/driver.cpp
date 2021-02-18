@@ -10,9 +10,10 @@
 #include <nav_msgs/Odometry.h>
 #include <tf/transform_broadcaster.h>
 #include <roboteq_nonholonomic_msgs/Ackermann.h>
-
-//#define _SENSORS
-
+#include <roboteq_nonholonomic_msgs/Duplex.h>
+#include <std_msgs/Float32.h>
+#define _SENSORS
+#define _ODOM_SENSORS
 #define DELTAT(_nowtime, _thentime) ((_thentime > _nowtime) ? ((0xffffffff - _thentime) + _nowtime) : (_nowtime - _thentime))
 
 float scale(float A, float A1, float A2, float Min, float Max)
@@ -80,6 +81,7 @@ protected:
   int kd_streeing;
   double wheel_to_streeing_width;
   double wheel_circumference;
+
 #ifdef _SENSORS
   float voltage;
   float current_right;
@@ -87,6 +89,16 @@ protected:
   float energy;
   float temperature;
   uint32_t current_last_time;
+#endif
+#ifdef _ODOM_SENSORS
+  std_msgs::Float32 voltage_msg;
+  ros::Publisher voltage_pub;
+roboteq_nonholonomic_msgs::Duplex current_msg;
+  ros::Publisher current_pub;
+  std_msgs::Float32 energy_msg;
+  ros::Publisher energy_pub;
+  std_msgs::Float32 temperature_msg;
+  ros::Publisher temperature_pub;
 #endif
   uint32_t odom_last_time;
 
@@ -99,17 +111,29 @@ protected:
   int32_t odom_encoder_steering_sum;
 
   float odom_encode_pos;
-  float odom_steering;
+  float odom_steering;   
   float odom_encode_last_pos;
   float odom_steering_last_pos;
   float heading;
   float velocity;
-  float odom_x;
-  float odom_y;
-  float odom_yaw;
-  float odom_last_x;
-  float odom_last_y;
-  float odom_last_yaw;
+  float odom_Euler_x;
+  float odom_Euler_y;
+  float odom_Euler_yaw;
+  float odom_RungeKutta_x;
+  float odom_RungeKutta_y;
+  float odom_RungeKutta_yaw;
+  float odom_RungeKutta_yaw_last;
+  float odom_mix_x;
+  float odom_mix_y;
+  float odom_mix_yaw_last;
+  float odom_mix_yaw;
+  float odom_mix_vyaw;
+  float current_velocity;
+  float current_steering;
+  
+  
+
+  
 };
 void MainNode::cmdvel_callback(const roboteq_nonholonomic_msgs::Ackermann &Ackermann_msg)
 {
@@ -220,7 +244,7 @@ void MainNode::odom_setup()
   ROS_INFO("Publishing to topic roboteq/voltage");
   voltage_pub = nh.advertise<std_msgs::Float32>("roboteq/voltage", 1000);
   ROS_INFO("Publishing to topic roboteq/current");
-  current_pub = nh.advertise<roboteq_diff_msgs::Duplex>("roboteq/current", 1000);
+  current_pub = nh.advertise<roboteq_nonholonomic_msgs::Duplex>("roboteq/current", 1000);
   ROS_INFO("Publishing to topic roboteq/energy");
   energy_pub = nh.advertise<std_msgs::Float32>("roboteq/energy", 1000);
   ROS_INFO("Publishing to topic roboteq/temperature");
@@ -283,29 +307,31 @@ void MainNode::odom_loop()
   uint32_t nowtime = millis();
 
   // if we haven't received encoder counts in some time then restart streaming
-  if (DELTAT(nowtime, odom_last_time) >= 1000)
+  if( DELTAT(nowtime,odom_last_time) >= 1000 )
   {
     odom_stream();
     odom_last_time = nowtime;
   }
 
-  //   // read sensor data stream from motor controller
+  // read sensor data stream from motor controller
   if (controller.available())
   {
     char ch = 0;
-    if (controller.read((uint8_t *)&ch, 1) == 0)
+    if ( controller.read((uint8_t*)&ch, 1) == 0 )
       return;
     if (ch == '\r')
     {
-
       odom_buf[odom_idx] = 0;
+#ifdef _ODOM_DEBUG
+//ROS_DEBUG_STREAM( "line: " << odom_buf );
+#endif
       // CR= is encoder counts
-      if (odom_buf[0] == 'C' && odom_buf[1] == 'R' && odom_buf[2] == '=')
+      if ( odom_buf[0] == 'C' && odom_buf[1] == 'R' && odom_buf[2] == '=' )
       {
         int delim;
-        for (delim = 3; delim < odom_idx; delim++)
+        for ( delim = 3; delim < odom_idx; delim++ )
         {
-          if (odom_encoder_toss > 0)
+          if ( odom_encoder_toss > 0 )
           {
             --odom_encoder_toss;
             break;
@@ -313,51 +339,44 @@ void MainNode::odom_loop()
           if (odom_buf[delim] == ':')
           {
             odom_buf[delim] = 0;
-            odom_encoder_velocity = (int32_t)strtol(odom_buf + 3, NULL, 10);
-            odom_encoder_steering = odom_encoder_steering + (int32_t)strtol(odom_buf + delim + 1, NULL, 10);
-
+            odom_encoder_velocity = (int32_t)strtol(odom_buf+3, NULL, 10);
+            odom_encoder_steering = (int32_t)strtol(odom_buf+delim+1, NULL, 10);
 #ifdef _ODOM_DEBUG
-            ROS_DEBUG_STREAM("encoder right: " << odom_encoder_right << " left: " << odom_encoder_left);
+ROS_DEBUG_STREAM("encoder right: " << odom_encoder_velocity << " left: " << odom_encoder_steering);
 #endif
             odom_publish();
             break;
           }
         }
       }
-
-      // else if (odom_buf[0] == 'C' && odom_buf[1] == '=')
-      // {
-      //   int count = 0;
-      //   int start = 2;
-      //   for (int delim = 2; delim <= odom_idx; delim++)
-      //   {
-      //     if (odom_buf[delim] == ':' )
-      //     {
-      //       odom_buf[delim] = 0;
-      //       if (count == 1)
-      //       {
-      //         voltage = (float)strtol(odom_buf + start, NULL, 10) / 10.0;
-      //         break;
-      //       }
-      //       start = delim + 1;
-      //       count++;
-      //     }
-      //   }
-      // }
 #ifdef _ODOM_SENSORS
       // V= is voltages
-      else if (odom_buf[0] == 'V' && odom_buf[1] == '=')
+      else if ( odom_buf[0] == 'V' && odom_buf[1] == '=' )
       {
         int count = 0;
         int start = 2;
-        for (int delim = 2; delim <= odom_idx; delim++)
+        for ( int delim = 2; delim <= odom_idx; delim++ )
         {
           if (odom_buf[delim] == ':' || odom_buf[delim] == 0)
           {
             odom_buf[delim] = 0;
-            if (count == 1)
+/*
+            switch (count)
             {
-              voltage = (float)strtol(odom_buf + start, NULL, 10) / 10.0;
+            case 0:
+//              odom_internal_voltage = (float)strtol(odom_buf+start, NULL, 10) / 10.0;
+              break;
+            case 1:
+              voltage = (float)strtol(odom_buf+start, NULL, 10) / 10.0;
+              break;
+            case 2:
+//              odom_aux_voltage = (float)strtol(odom_buf+start, NULL, 1000.0);
+              break;
+            }
+*/
+            if ( count == 1 )
+            {
+              voltage = (float)strtol(odom_buf+start, NULL, 10) / 10.0;
 #ifdef _ODOM_DEBUG
 //ROS_DEBUG_STREAM("voltage: " << voltage);
 #endif
@@ -369,24 +388,24 @@ void MainNode::odom_loop()
         }
       }
       // BA= is motor currents
-      else if (odom_buf[0] == 'B' && odom_buf[1] == 'A' && odom_buf[2] == '=')
+      else if ( odom_buf[0] == 'B' && odom_buf[1] == 'A' && odom_buf[2] == '=' )
       {
         int delim;
-        for (delim = 3; delim < odom_idx; delim++)
+        for ( delim = 3; delim < odom_idx; delim++ )
         {
           if (odom_buf[delim] == ':')
           {
             odom_buf[delim] = 0;
-            current_right = (float)strtol(odom_buf + 3, NULL, 10) / 10.0;
-            current_left = (float)strtol(odom_buf + delim + 1, NULL, 10) / 10.0;
+            current_velocity = (float)strtol(odom_buf+3, NULL, 10) / 10.0;
+            current_steering = (float)strtol(odom_buf+delim+1, NULL, 10) / 10.0;
 #ifdef _ODOM_DEBUG
 //ROS_DEBUG_STREAM("current right: " << current_right << " left: " << current_left);
 #endif
 
             // determine delta time in seconds
-            float dt = (float)DELTAT(nowtime, current_last_time) / 1000.0;
+            float dt = (float)DELTAT(nowtime,current_last_time) / 1000.0;
             current_last_time = nowtime;
-            energy += (current_right + current_left) * dt / 3600.0;
+            energy += (current_velocity + current_steering) * dt / 3600.0;
             break;
           }
         }
@@ -394,7 +413,7 @@ void MainNode::odom_loop()
 #endif
       odom_idx = 0;
     }
-    else if (odom_idx < (sizeof(odom_buf) - 1))
+    else if ( odom_idx < (sizeof(odom_buf)-1) )
     {
       odom_buf[odom_idx++] = ch;
     }
@@ -403,43 +422,84 @@ void MainNode::odom_loop()
 
 void MainNode::odom_publish()
 {
-
   // determine delta time in seconds
   uint32_t nowtime = millis();
   float dt = (float)DELTAT(nowtime, odom_last_time) / 1000.0;
   odom_last_time = nowtime;
-
   if (dt < 0.001)
   {
     return;
   }
-  ///////////////drive return 
-   velocity = ((float)odom_encoder_velocity / 1440.0 * 0.957072);
-  odom_steering = scale(odom_encoder_steering, -314, 367, -35.0, 35.0);
-  ////////////////////////Find Velocity Encode///////////////////////////////////
-  //velocity = float((odom_encode_pos - odom_encode_last_pos) / dt);
-  heading += (velocity / 0.50) * tan(odom_steering * 3.1414 / 180.0);
-  /////////////////pos odom xy /////////////////////////////////////////
-  odom_x += (velocity * cos(constrainAngle(heading) * 3.1414 / 180.0)) ; // m
-  //odom_x += (velocity) ; // m
-  odom_y += (velocity * sin(constrainAngle(heading) * 3.1414 / 180.0)) * dt; // m
-  /////////////////////////////////////Vx Vy //////////////////////////////
-  float vx = (odom_x - odom_last_x) / dt;
-  float vy = (odom_y - odom_last_y) / dt;
-  float vyaw = (constrainAngle(heading) - odom_last_yaw) / dt;
-  odom_last_x = odom_x;
-  odom_last_y = odom_y;
-  odom_last_yaw = constrainAngle(heading);
-  odom_encode_last_pos = odom_encode_pos;
+  ////////////////////////Find Velocity steering Encode and init odom steering ///////////////////////////////////
+  velocity = ((float)odom_encoder_velocity / 1440.0 * 0.957072);
+  odom_steering = scale(odom_encoder_steering, -443, 265, -45.0, 45.0);///////Fix odom 
+ heading += (velocity / 1.1) * tan(odom_steering * 3.1414 / 180.0);
 
+///////////////////odom Euler /////////////////////////////////////
+odom_Euler_x += velocity *cos(odom_Euler_yaw);
+odom_Euler_y += velocity *sin(odom_Euler_yaw);
+odom_Euler_yaw += (velocity / 1.1) * tan(odom_steering * 3.1414 / 180.0);
+  // float vx = (odom_x - odom_last_x) / dt;
+  // float vy = (odom_y - odom_last_y) / dt;
+  // float vyaw = (constrainAngle(heading) - odom_last_yaw) / dt;
+  // odom_last_x = odom_x;
+  // odom_last_y = odom_y;
+  // odom_last_yaw = constrainAngle(heading);
+///////////////////odom Euler /////////////////////////////////////
+odom_RungeKutta_yaw += (velocity / 1.1) * tan(odom_steering * 3.1414 / 180.0);
+odom_RungeKutta_x += velocity * cos(odom_RungeKutta_yaw+((odom_RungeKutta_yaw_last-odom_RungeKutta_yaw)/2));
+odom_RungeKutta_y += velocity * sin(odom_RungeKutta_yaw+((odom_RungeKutta_yaw_last-odom_RungeKutta_yaw)/2));
+odom_RungeKutta_yaw_last = odom_RungeKutta_yaw;
+  // float vx = (odom_x - odom_last_x) / dt;
+  // float vy = (odom_y - odom_last_y) / dt;
+  // float vyaw = (constrainAngle(heading) - odom_last_yaw) / dt;
+  // odom_last_x = odom_x;
+  // odom_last_y = odom_y;
+  // odom_last_yaw = constrainAngle(heading);
+/////////////////odom Euler mix exact///////////////////////////////
+odom_mix_vyaw = (velocity / 1.1) * tan(odom_steering * 3.1414 / 180.0);
+if(odom_mix_vyaw>0.0001){
+odom_mix_yaw += (velocity / 1.1) * tan(odom_steering * 3.1414 / 180.0);
+odom_mix_x += velocity/odom_mix_vyaw * (sin(odom_mix_yaw)-sin(odom_mix_yaw_last));
+odom_mix_y += velocity/odom_mix_vyaw * (cos(odom_mix_yaw)-cos(odom_mix_yaw_last));
+odom_mix_yaw_last = odom_mix_yaw;
+}
+else{
+odom_mix_yaw += (velocity / 1.1) * tan(odom_steering * 3.1414 / 180.0);
+odom_mix_x += velocity * cos(odom_mix_yaw+((odom_mix_yaw_last-odom_mix_yaw)/2));
+odom_mix_y += velocity * sin(odom_mix_yaw+((odom_mix_yaw_last-odom_mix_yaw)/2));
+odom_mix_yaw_last = odom_mix_yaw;
+}
+  // float vx = (odom_x - odom_last_x) / dt;
+  // float vy = (odom_y - odom_last_y) / dt;
+  // float vyaw = (constrainAngle(heading) - odom_last_yaw) / dt;
+  // odom_last_x = odom_x;
+  // odom_last_y = odom_y;
+  // odom_last_yaw = constrainAngle(heading);
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+  
+  /////////////////pos odom xy /////////////////////////////////////////
+  // odom_x += (velocity * cos(constrainAngle(heading) * 3.1414 / 180.0)) ; // m
+  //odom_x += (velocity) ; // m
+  // odom_y += (velocity * sin(constrainAngle(heading) * 3.1414 / 180.0)) ; // m
+  /////////////////////////////////////Vx Vy //////////////////////////////
+  // float vx = (odom_x - odom_last_x) / dt;
+  // float vy = (odom_y - odom_last_y) / dt;
+  // float vyaw = (constrainAngle(heading) - odom_last_yaw) / dt;
+  // odom_last_x = odom_x;
+  // odom_last_y = odom_y;
+  // odom_last_yaw = constrainAngle(heading);
+  ///odom_encode_last_pos = odom_encode_pos;
+  ROS_INFO_STREAM("steering " << odom_encoder_steering);
   geometry_msgs::Quaternion quat = tf::createQuaternionMsgFromYaw(constrainAngle(heading) * 3.1414 / 180.0);
 
   if (pub_odom_tf)
   {
     tf_msg.header.seq++;
     tf_msg.header.stamp = ros::Time::now();
-    tf_msg.transform.translation.x = odom_x;
-    tf_msg.transform.translation.y = odom_y;
+    tf_msg.transform.translation.x = odom_Euler_x;
+    tf_msg.transform.translation.y = odom_Euler_y;
     tf_msg.transform.translation.z = 0.0;
     tf_msg.transform.rotation = quat;
     odom_broadcaster.sendTransform(tf_msg);
@@ -447,17 +507,17 @@ void MainNode::odom_publish()
 
   odom_msg.header.seq++;
   odom_msg.header.stamp = ros::Time::now();
-  odom_msg.pose.pose.position.x = odom_x;
-  odom_msg.pose.pose.position.y = odom_y;
+  odom_msg.pose.pose.position.x = odom_Euler_x;
+  odom_msg.pose.pose.position.y = odom_Euler_y;
   odom_msg.pose.pose.position.z = 0.0;
   odom_msg.pose.pose.orientation = quat;
-  odom_msg.twist.twist.linear.x = vx;
-  odom_msg.twist.twist.linear.y = vy;
+  odom_msg.twist.twist.linear.x = 0;
+  odom_msg.twist.twist.linear.y = 0;
   odom_msg.twist.twist.linear.z = 0.0;
   odom_msg.twist.twist.angular.x = 0.0;
   odom_msg.twist.twist.angular.y = 0.0;
-  odom_msg.twist.twist.linear.x = vx;
-  odom_msg.twist.twist.linear.y = vy;
+  odom_msg.twist.twist.linear.x = 0;
+  odom_msg.twist.twist.linear.y = 0;
   odom_pub.publish(odom_msg);
 
 }
@@ -489,16 +549,22 @@ MainNode::MainNode() : pub_odom_tf(true),
                        odom_steering(0.0),
                        odom_encode_last_pos(0.0),
                        odom_steering_last_pos(0.0),
-                       odom_x(0.0),
-                       odom_y(0.0),
-                       odom_yaw(0.0),
-                       odom_last_x(0.0),
-                       odom_last_y(0.0),
-                       odom_last_yaw(0.0),
+
                        odom_last_time(0),
                        heading(0.0),
-                       velocity(0.0)
-
+                       velocity(0.0),
+                       odom_Euler_x(0.0),
+                       odom_Euler_y(0.0),
+                       odom_Euler_yaw(0.0),
+                       odom_RungeKutta_x(0.0),
+                       odom_RungeKutta_y(0.0),
+                       odom_RungeKutta_yaw(0.0),
+                       odom_RungeKutta_yaw_last(0.0),
+                       odom_mix_x(0.0),
+                       odom_mix_y(0.0),
+                       odom_mix_yaw_last(0.0),
+                       odom_mix_yaw(0.0)
+                       
 {
   ros::NodeHandle nhLocal("~");
   nhLocal.param("pub_odom_tf", pub_odom_tf, true);

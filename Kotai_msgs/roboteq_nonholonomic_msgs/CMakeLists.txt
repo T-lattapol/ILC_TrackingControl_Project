@@ -7,7 +7,7 @@ find_package(catkin REQUIRED COMPONENTS message_generation std_msgs)
 add_message_files(FILES
                   Ackermann.msg
                   AckermannStamped.msg
-                 
+                  Duplex.msg
                  )
 
 add_service_files(FILES
